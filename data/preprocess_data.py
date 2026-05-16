@@ -8,10 +8,7 @@ table = {ord(f): ord(t) for f, t in zip(
 
 def punctuation_format(text: str):
     # Replace non-breaking space with space
-    # text = text.strip() + '\n'
     text = text.replace('\u202f', ' ').replace('\xa0', ' ')
-    # change chinese punctuation to english ones
-    # text = text.translate(table)
     if not text.endswith("\n"):
         text += "\n"
     return text
@@ -25,7 +22,12 @@ def format_eol(text):
 
 def get_white_space():
     r = random.random()
-    return '' if r < 0.33 else (' ' if r < 0.66 else '\n')
+    if r < 0.33:
+        return ''
+    elif r < 0.66:
+        return ' '
+    else:
+        return '\n'
 
 
 def gen_prompt(tokenizer, data, graph_pad_id, graph_token_num):
@@ -78,10 +80,6 @@ class UniformEncoder(Encoder):
         input_ids, loss_mask = [], []
 
         if self.args.mode == 'ft':
-            # system
-            # input_ids += self.default_system_ids
-            # loss_mask += [0] * len(self.default_system_ids)
-            # human
             content_ids = gen_prompt(self.tokenizer, data, self.args.graph_pad_id, self.args.graph_token_num)
             input_ids += self.human_marker_ids + content_ids
             loss_mask += [0] * (len(self.human_marker_ids) + len(content_ids))
@@ -117,10 +115,6 @@ class UniformEncoder(Encoder):
     def encode_text(self, data):
         input_ids, loss_mask = [], []
 
-        # system
-        # input_ids += self.default_system_ids
-        # loss_mask += [0] * len(self.default_system_ids)
-        # human
         content_ids = self.tokenizer.encode(data['human'], add_special_tokens=False)
         input_ids += self.human_marker_ids + content_ids
         loss_mask += [0] * (len(self.human_marker_ids) + len(content_ids))

@@ -3,7 +3,6 @@ import torch
 
 # print out arguments in a nice way
 def print_args(args, accelerator):
-    # 计算所有键的最大字符串长度
     max_key_length = max(len(str(key)) for key in vars(args).keys())
     
     message = ""

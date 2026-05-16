@@ -30,29 +30,6 @@ class Adapter(nn.Module):
         print_rank_0(f"Parameters of cross attention: {count_parameters(self.attn) / 1e6:.1f}M")
     
     def forward(self, features, batch):
-        # # reshape features from (sum(num_node), d_embed) to (bs, max(num_node), d_embed)
-        # features_2d = features.to(self.q.dtype)
-        # bs = len(batch)
-        # max_n = batch.max().item()
-        # features = torch.zeros((bs, max_n, features_2d.shape[-1]), dtype=features_2d.dtype, device=features_2d.device)
-        # start_idx = 0
-        # for i in range(bs):
-        #     end_idx = start_idx + batch[i]
-        #     features[i, :batch[i]] = features_2d[start_idx: end_idx]
-        #     start_idx = end_idx
-
-        # # adapter -> (bs, num_graph_tokens, d_lm)
-        # # expand querys to (bs, n_query, d_lm)
-        # queries = self.q.expand(bs, -1, -1)
-
-        # # mask should be shape (bs, S), where S is source seq length
-        # # note that Pytorch documentation refers to query as "target", and key/value as "source"
-        # mask = torch.arange(max_n, device=features.device).expand(bs, max_n) < batch.unsqueeze(1)
-        # mask = ~mask                    # positions set to True are not allowed to attend
-            
-        # embeddings = self.attn(queries, features, features, key_padding_mask=mask, need_weights=False)[0]
-        # return embeddings
-
         # reshape features from (sum(num_node), d_embed) to (bs, max(num_node), d_embed)
         features_2d = features.to(self.q.dtype)
         bincount = batch.bincount()     # bincount: (bs,)
@@ -118,8 +95,8 @@ class Model(nn.Module):
 
         if args.checkpoint:
             print_rank_0_highlight(f"Loading exising checkpoint: {args.checkpoint}")
-            self.gnn.load_state_dict(torch.load(f"{args.checkpoint}/GNN.pth"))
-            self.adapter.load_state_dict(torch.load(f"{args.checkpoint}/adapter.pth"))
+            self.gnn.load_state_dict(torch.load(f"{args.checkpoint}/GNN.pth", weights_only=True))
+            self.adapter.load_state_dict(torch.load(f"{args.checkpoint}/adapter.pth", weights_only=True))
 
     def forward(self, x):
         bs = x['input_ids'].shape[0]
@@ -136,13 +113,10 @@ class Model(nn.Module):
             else:
                 raise NotImplementedError()
 
-            # x['graph_embedding']:         (sum(num_nodes), d_embed)
-            # x.g.edges():                  (2, sum(num_edges))
             embeddings = x['graph_embedding'].to(self.gnn.Chebs[0].weight.dtype)
 
             # GNN -> (sum(num_node), d_embed), bf16
             features = self.gnn(real=embeddings, imag=embeddings, edge_index=x['edge_index'])
-            # features = self.gnn(x['g'], embeddings, embeddings)
             
             # adapter -> (bs, num_graph_tokens, d_lm)
             embeddings = self.adapter(features, x['batch'])

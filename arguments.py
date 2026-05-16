@@ -42,10 +42,10 @@ class TrainArgs:
     # train/valid/test split
     data_split: str = "99,1,0"
 
-    # mircro train batch size
+    # micro train batch size
     per_device_train_batch_size: int = 8
 
-    # micro eval batch size, always same as micro train batch size
+    # micro eval batch size
     per_device_eval_batch_size: int = 8
 
     # lora (for stage 2 only)

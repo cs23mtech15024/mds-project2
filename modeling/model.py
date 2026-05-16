@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-# from .magnet import MagNet
 from .duplex import DUPLEX
 from transformers import AutoModelForCausalLM, AutoModel
 from utils import count_parameters, print_rank_0, print_highlight, print_rank_0_highlight
@@ -110,8 +109,8 @@ class Model(nn.Module):
 
         if args.checkpoint:
             print_rank_0_highlight(f"Loading exising checkpoint: {args.checkpoint}")
-            self.gnn.load_state_dict(torch.load(f"{args.checkpoint}/GNN.pth"))
-            self.adapter.load_state_dict(torch.load(f"{args.checkpoint}/adapter.pth"))
+            self.gnn.load_state_dict(torch.load(f"{args.checkpoint}/GNN.pth", weights_only=True))
+            self.adapter.load_state_dict(torch.load(f"{args.checkpoint}/adapter.pth", weights_only=True))
 
     def forward(self, x):
         bs = x['input_ids'].shape[0]
@@ -128,12 +127,9 @@ class Model(nn.Module):
             else:
                 raise NotImplementedError()
 
-            # x['graph_embedding']:         (sum(num_nodes), d_embed)
-            # x.g.edges():                  (2, sum(num_edges))
             embeddings = x['graph_embedding'].to(self.gnn.am_layers[0].attn_l.dtype)
 
             # GNN -> (sum(num_node), d_embed), bf16
-            # features = self.magnet(real=embeddings, imag=embeddings, edge_index=x['edge_index'])
             features = self.gnn(x['g'], embeddings, embeddings)
             
             # adapter -> (bs, num_graph_tokens, d_lm)
@@ -150,8 +146,6 @@ class Model(nn.Module):
                 pos_end = graph_token_positions.max()
                 inputs_embeds[i, pos_start:pos_end+1] = embeddings[i]
             
-            # lm
-            # print_rank_0('start lm forward')
             outputs = self.lm(inputs_embeds=inputs_embeds,
                             return_dict=True)
             return outputs

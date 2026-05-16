@@ -18,7 +18,7 @@ class DUPLEX(nn.Module):
         self.am_layers.append(GATConv(args.input_dim, args.hidden_dim//args.head, num_heads=args.head))
         self.ph_layers.append(GATConv(args.input_dim, args.hidden_dim//args.head, num_heads=args.head))
         if args.fusion == 'add':
-            for i in range(1, args.n_layers-1):
+            for _ in range(1, args.n_layers-1):
                 self.am_layers.append(GATConv(args.hidden_dim, args.hidden_dim//args.head, num_heads=args.head))
                 self.ph_layers.append(GATConv(args.hidden_dim, args.hidden_dim//args.head, num_heads=args.head))
             if self.n_layers==1:
@@ -31,7 +31,7 @@ class DUPLEX(nn.Module):
             self.ph_layers.append(GATConv(args.hidden_dim, args.output_dim, num_heads=args.head))
 
         else:
-            for i in range(0, args.n_layers-2):
+            for _ in range(0, args.n_layers-2):
                 self.am_layers.append(GATConv(args.hidden_dim, args.hidden_dim//args.head, num_heads=args.head))
                 self.ph_layers.append(GATConv(args.hidden_dim, args.hidden_dim//args.head, num_heads=args.head))
             self.ph_layers.append(GATConv(args.hidden_dim, args.output_dim, num_heads=args.head))
@@ -79,6 +79,4 @@ class DUPLEX(nn.Module):
                 h_ph = self.dropout(h_ph)
             else:
                 output = self.projector(torch.cat((h_am, h_ph), dim=-1))
-                # pred_score = self.classifier(torch.cat((h_am, h_ph), dim=-1))
-                # continue
         return output

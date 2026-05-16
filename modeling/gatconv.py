@@ -9,7 +9,7 @@ from dgl import function as fn
 from dgl.base import DGLError
 from dgl.utils import expand_as_pair
 from dgl.nn.functional import edge_softmax
-from dgl.nn.pytorch.utils import Identity
+from torch.nn import Identity
 
 class GATConv(nn.Module):
     def __init__(

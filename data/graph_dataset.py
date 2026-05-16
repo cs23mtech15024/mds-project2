@@ -47,13 +47,18 @@ def load_dataset(args, accelerator):
     if args.mode == 'pt':
         accelerator.print(dataset_split)
         return dataset_split['train'], dataset_split['test']
-    
+
     else:
-        # shuffle each finetune dataset (Java-Python, Python-Java) separately to avoid data leak
-        datasets_ft = [Dataset.from_dict({k: df_ft[k].to_list() for k in df_ft.keys() if k in all_data_fields}) for df_ft in dfs_ft]
-        dataset_splits_ft = [ds_ft.train_test_split(train_size=99/100.0, shuffle=True, seed=42) for ds_ft in datasets_ft]
-        dataset_ft_train = concatenate_datasets([ds_ft['train'] for ds_ft in dataset_splits_ft])
-        dataset_ft_valid = concatenate_datasets([ds_ft['test'] for ds_ft in dataset_splits_ft])
+        if dfs_ft:
+            # shuffle each finetune dataset (Java-Python, Python-Java) separately to avoid data leak
+            datasets_ft = [Dataset.from_dict({k: df_ft[k].to_list() for k in df_ft.keys() if k in all_data_fields}) for df_ft in dfs_ft]
+            dataset_splits_ft = [ds_ft.train_test_split(train_size=99/100.0, shuffle=True, seed=42) for ds_ft in datasets_ft]
+            dataset_ft_train = concatenate_datasets([ds_ft['train'] for ds_ft in dataset_splits_ft])
+            dataset_ft_valid = concatenate_datasets([ds_ft['test'] for ds_ft in dataset_splits_ft])
+        else:
+            # graph-only fine-tuning (e.g. clone detection): no text-only downstream data
+            dataset_ft_train = Dataset.from_dict({'human': [], 'bot': []})
+            dataset_ft_valid = Dataset.from_dict({'human': [], 'bot': []})
         
         accelerator.print('Graph dataset:')
         accelerator.print(dataset_split)

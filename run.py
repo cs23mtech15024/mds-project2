@@ -3,7 +3,6 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 import dgl
-# from deepspeed.ops.adam import FusedAdam as AdamW
 from torch.optim import AdamW
 from accelerate import Accelerator
 from accelerate.logging import get_logger
@@ -43,7 +42,7 @@ logging.basicConfig(
 logger.info(accelerator.state, main_process_only=False)
 
 # used in collate function
-node_type_embedding = torch.load(args.node_type_embedding)
+node_type_embedding = torch.load(args.node_type_embedding, weights_only=True)
 encoder = UniformEncoder(args)
 encoder.initializer()
 
@@ -65,6 +64,8 @@ def collate_fn(instances):
 
         # batch graphs
         if 'node_ids' in instances[0].keys():
+            if n == 0:
+                return None
             graphs = []
             for i in range(n):
                 edges = torch.LongTensor(edge_index[i]).t().contiguous()
@@ -117,36 +118,35 @@ def main():
     tokenizer = build_tokenizer(args)
     model = Model(args, len(tokenizer))
 
-    # print(model.lm.device)
     t2 = time.time()
     logger.info(f"model loading time: {t2 - t1:.2f}s")
 
     # dataloader
     train_dataloader = DataLoader(
         train_dataset, shuffle=True, collate_fn=collate_fn,
-        batch_size=args.per_device_train_batch_size, pin_memory=True
+        batch_size=args.per_device_train_batch_size, pin_memory=True, num_workers=0
     )
     valid_dataloader = DataLoader(
-        valid_dataset, collate_fn=collate_fn, 
-        batch_size=args.per_device_eval_batch_size, pin_memory=True
+        valid_dataset, collate_fn=collate_fn,
+        batch_size=args.per_device_eval_batch_size, pin_memory=True, num_workers=0
     )
     if args.mode == 'ft':
         train_dataloader_ft = DataLoader(
-            train_dataset_ft, shuffle=True, collate_fn=collate_fn,
-            batch_size=args.per_device_train_batch_size, pin_memory=True
+            train_dataset_ft, shuffle=len(train_dataset_ft) > 0, collate_fn=collate_fn,
+            batch_size=args.per_device_train_batch_size, pin_memory=True, num_workers=0
         )
         valid_dataloader_ft = DataLoader(
-            valid_dataset_ft, collate_fn=collate_fn, 
-            batch_size=args.per_device_eval_batch_size, pin_memory=True
+            valid_dataset_ft, collate_fn=collate_fn,
+            batch_size=args.per_device_eval_batch_size, pin_memory=True, num_workers=0
         )
     else:
         train_dataloader_ft, valid_dataloader_ft = None, None
-    
+
     # if finetuning, train all params, else only pretrain GNN and adapter
     if args.mode == 'ft':
         trained_params = model.parameters()
     elif args.mode == 'pt':
-        trained_params = [p for p in model.gnn.parameters()] + [p for p in model.adapter.parameters()]
+        trained_params = list(model.gnn.parameters()) + list(model.adapter.parameters())
     else:
         raise NotImplementedError()
     optimizer = AdamW(
@@ -158,7 +158,7 @@ def main():
     
     # Scheduler and math around the number of training steps.
     overrode_max_train_steps = False
-    num_update_steps_per_epoch = math.ceil(len(train_dataloader) + (len(train_dataloader_ft) if args.mode == 'ft' else 0) / args.gradient_accumulation_steps)
+    num_update_steps_per_epoch = math.ceil((len(train_dataloader) + (len(train_dataloader_ft) if args.mode == 'ft' else 0)) / args.gradient_accumulation_steps)
     if args.max_train_steps is None:
         args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
         overrode_max_train_steps = True
@@ -179,7 +179,7 @@ def main():
             train_dataloader_ft, valid_dataloader_ft = accelerator.prepare(train_dataloader_ft, valid_dataloader_ft)
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
-    num_update_steps_per_epoch = math.ceil(len(train_dataloader) + (len(train_dataloader_ft) if args.mode == 'ft' else 0) / args.gradient_accumulation_steps)
+    num_update_steps_per_epoch = math.ceil((len(train_dataloader) + (len(train_dataloader_ft) if args.mode == 'ft' else 0)) / args.gradient_accumulation_steps)
     if overrode_max_train_steps:
         args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
     # Afterward we recalculate our number of training epochs

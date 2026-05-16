@@ -1,11 +1,10 @@
 import os
-import sys
 import math, random
 import torch
 from tqdm.auto import tqdm
 
-sys.path.append("..")
-from utils import loss_func, touch_print
+from .loss import loss_func
+from .common_utils import touch_print
 from torch.utils.tensorboard import SummaryWriter
 from accelerate.logging import get_logger
 
@@ -20,7 +19,7 @@ def write_tensorboard(summary_writer: SummaryWriter, log_dict: dict, completed_s
 def accelerate_saving_checkpoint(accelerator, model, tokenizer, output_dir: str, completed_steps: int, args):
     accelerator.wait_for_everyone()
 
-    accelerator.print(f"[CHECKPOINT] Saving checkpoint")
+    accelerator.print("[CHECKPOINT] Saving checkpoint")
 
     if accelerator.is_main_process:
         tokenizer.save_pretrained(output_dir)
@@ -48,7 +47,7 @@ def accelerate_monitor(accelerator, reduce_loss, reduce_loss_ft, args, completed
     gather reduce_loss from all N devices.
     train logging and tensorboarding.
     """
-    if type(reduce_loss) != int:
+    if not isinstance(reduce_loss, int):
         reduce_losses = accelerator.gather(reduce_loss)
         
         train_loss = torch.mean(reduce_losses) / reduce_step
@@ -63,7 +62,7 @@ def accelerate_monitor(accelerator, reduce_loss, reduce_loss_ft, args, completed
     else:
         train_log_dict = {"lr": lr_scheduler.get_lr()[0]}
 
-    if args.mode == 'ft' and type(reduce_loss_ft) != int:
+    if args.mode == 'ft' and not isinstance(reduce_loss_ft, int):
         reduce_loss_ft = accelerator.gather(reduce_loss_ft)
         train_loss_ft = torch.mean(reduce_loss_ft) / reduce_step_ft
         train_log_dict["training_loss_ft"] = train_loss_ft
@@ -73,7 +72,7 @@ def accelerate_monitor(accelerator, reduce_loss, reduce_loss_ft, args, completed
 
 
 def accelerate_evaluate(accelerator, model, valid_dataloader, valid_dataloader_ft, args, completed_steps, step, min_eval_loss, stall_num,
-                        best_step, summary_writer):
+                        best_step, summary_writer, tokenizer):
     """
     evaluate the model at current completed_steps on valid_dataloader and gather eval_loss on all devices.
     eval logging and tensorboarding.
@@ -103,6 +102,10 @@ def accelerate_evaluate(accelerator, model, valid_dataloader, valid_dataloader_f
             min_eval_loss = eval_loss
             stall_num = 0
             best_step = completed_steps
+            # Save best checkpoint
+            best_dir = os.path.join(args.output_dir, "best_checkpoint") if args.output_dir else "best_checkpoint"
+            accelerate_saving_checkpoint(accelerator, model, tokenizer, best_dir, completed_steps, args)
+            accelerator.print(f"[BEST] New best eval_loss={eval_loss:.6f} at step {completed_steps} → saved to {best_dir}")
         else:
             stall_num += 1
         perplexity = math.exp(eval_loss)
@@ -115,7 +118,7 @@ def accelerate_evaluate(accelerator, model, valid_dataloader, valid_dataloader_f
     eval_log_dict = {"valid_loss": eval_loss.float(),
                      "perplexity": perplexity}
     
-    if args.mode == 'ft':
+    if args.mode == 'ft' and len(valid_dataloader_ft) > 0:
         losses = []
         for batch in valid_dataloader_ft:
             with torch.no_grad():
@@ -139,7 +142,7 @@ def accelerate_evaluate(accelerator, model, valid_dataloader, valid_dataloader_f
             perplexity_ft = math.exp(eval_loss_ft)
         except OverflowError:
             perplexity_ft = float("inf")
-        
+
         logger.info(f"[valid_batch_num_ft={valid_batch_num_ft}], [gather_size_ft={gathered_size_ft}]"
                     f"[perplexity_ft={perplexity_ft:.4f}][eval_loss_ft={eval_loss_ft:.6f}]")
         eval_log_dict["valid_loss_ft"] = eval_loss_ft.float()
@@ -168,7 +171,12 @@ def accelerate_train(accelerator, model, train_dataloader, valid_dataloader, tra
     logger.info("***************************************************************************************************")
 
     # Only show the progress bar once on each machine.
-    progress_bar = tqdm(range(args.max_train_steps), disable=not accelerator.is_local_main_process)
+    progress_bar = tqdm(
+        range(args.max_train_steps),
+        desc="Training",
+        disable=not accelerator.is_local_main_process,
+        dynamic_ncols=True,
+    )
 
     # set starting_epoch, completed_steps and resume_step of train_dataloader
     completed_steps = 0
@@ -178,23 +186,26 @@ def accelerate_train(accelerator, model, train_dataloader, valid_dataloader, tra
     min_eval_loss = float('inf')
     stall_num = 0
     best_step = None
-    
+
     # monitor train loss
     reduce_loss, reduce_step = 0, 0
     reduce_loss_ft, reduce_step_ft = 0, 0
+    last_train_loss = float('nan')
+    last_eval_loss = float('nan')
 
     # Training Loop!
     for epoch in range(starting_epoch, args.num_train_epochs):
         if args.early_stopping and stall_num == args.early_stopping_stall_num:
             break
+        progress_bar.set_description(f"Epoch {epoch + 1}/{args.num_train_epochs}")
 
         # prepare dataloaders
         train_dataloader_iter = iter(train_dataloader)
         next_idx, next_ft_idx = 0, 0
         if args.mode == 'ft':
             train_dataloader_ft_iter = iter(train_dataloader_ft)
-            ratio = len(train_dataloader_ft) / (len(train_dataloader) + len(train_dataloader_ft))
-            loss_ratio = min(len(train_dataloader_ft) / len(train_dataloader), 1)
+            ratio = len(train_dataloader_ft) / (len(train_dataloader) + len(train_dataloader_ft)) if len(train_dataloader_ft) > 0 else 0
+            loss_ratio = min(len(train_dataloader_ft) / len(train_dataloader), 1) if len(train_dataloader_ft) > 0 else 1
         
         def get_batch(next_idx, next_ft_idx):
             if args.mode == 'pt' or next_ft_idx == len(train_dataloader_ft):
@@ -224,8 +235,8 @@ def accelerate_train(accelerator, model, train_dataloader, valid_dataloader, tra
             
             with accelerator.accumulate(model):
                 batch, next_idx, next_ft_idx = get_batch(next_idx, next_ft_idx)
-                # if step == 0:
-                #     touch_print(accelerator, batch, num_tokens=10)
+                if batch is None:
+                    continue
                 # forward
                 outputs = model(batch)
 
@@ -238,6 +249,10 @@ def accelerate_train(accelerator, model, train_dataloader, valid_dataloader, tra
 
                 # backward
                 accelerator.backward(loss)
+
+                # clip gradients to prevent NaN loss
+                if accelerator.sync_gradients:
+                    accelerator.clip_grad_norm_(model.parameters(), 1.0)
 
                 # update(sync_gradients)
                 optimizer.step()
@@ -261,15 +276,24 @@ def accelerate_train(accelerator, model, train_dataloader, valid_dataloader, tra
                 if accelerator.sync_gradients:
 
                     completed_steps += 1
+                    progress_bar.update(1)
+
                     # monitoring training process and logging and tensorboarding
                     if completed_steps % args.log_interval == 0:
-                        progress_bar.update(args.log_interval)
                         accelerate_monitor(
                             accelerator, reduce_loss, reduce_loss_ft, args, completed_steps,
                             lr_scheduler, optimizer, summary_writer, reduce_step, reduce_step_ft
                         )
+                        if not isinstance(reduce_loss, int) and reduce_step > 0:
+                            last_train_loss = (reduce_loss / reduce_step).item()
                         reduce_loss, reduce_loss_ft = 0, 0
                         reduce_step, reduce_step_ft = 0, 0
+
+                    progress_bar.set_postfix(
+                        loss=f"{last_train_loss:.4f}",
+                        eval=f"{last_eval_loss:.4f}",
+                        lr=f"{optimizer.param_groups[0]['lr']:.2e}",
+                    )
 
                     # steps checkpointing
                     if args.checkpointing_steps and completed_steps % args.checkpointing_steps == 0:
@@ -283,8 +307,9 @@ def accelerate_train(accelerator, model, train_dataloader, valid_dataloader, tra
                         model.eval()
                         eval_loss, min_eval_loss, stall_num, best_step = accelerate_evaluate(
                             accelerator, model, valid_dataloader, valid_dataloader_ft, args, completed_steps, step,
-                            min_eval_loss, stall_num, best_step, summary_writer
+                            min_eval_loss, stall_num, best_step, summary_writer, tokenizer
                         )
+                        last_eval_loss = eval_loss.item()
                         model.train()
 
                         # early stoppin when stalling more than args.early_stopping_stall_num
