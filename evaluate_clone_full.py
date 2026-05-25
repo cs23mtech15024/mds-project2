@@ -97,7 +97,7 @@ def load_model(base_model_path, checkpoint_dir, graph_token_num, graph_hidden_di
         dr_rate      = 0.0
         n_layers     = 3
         fusion_layer = 1
-        input_dim    = 256
+        input_dim    = 200  # bytecode embedding dim
         hidden_dim   = graph_hidden_dim
         output_dim   = graph_hidden_dim
         head         = 1
@@ -127,8 +127,15 @@ def predict(lm, gnn, adapter, tokenizer, sample, node_type_emb, args, device):
 
     # 1. Build DGL graph from stored node/edge data
     edges = torch.LongTensor(sample["edge_index"]).t().contiguous()
-    g     = dgl.graph((edges[0], edges[1]), num_nodes=len(sample["node_ids"]))
-    nfeats = node_type_emb[torch.tensor(sample["node_ids"])].to(device)
+    if "embeddings" in sample:
+        # pre-computed bytecode embeddings (one 200-dim vector per basic block)
+        num_nodes = len(sample["embeddings"])
+        g     = dgl.graph((edges[0], edges[1]), num_nodes=num_nodes)
+        nfeats = torch.tensor(sample["embeddings"], dtype=torch.float32).to(device)
+    else:
+        # AST node type ids looked up in embedding table
+        g     = dgl.graph((edges[0], edges[1]), num_nodes=len(sample["node_ids"]))
+        nfeats = node_type_emb[torch.tensor(sample["node_ids"])].to(device)
     g = g.to(device)
     g.ndata["x"] = nfeats
 
@@ -194,16 +201,23 @@ def compute_metrics(y_true, y_pred):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint",       required=True,
-                        help="Fine-tuned checkpoint dir (contains GNN.pth, adapter.pth, adapter_model.safetensors)")
+    parser.add_argument("--checkpoint",       default=None,
+                        help="Fine-tuned checkpoint dir. Defaults to best_checkpoint inside --output_dir.")
     parser.add_argument("--base_model",       default="Qwen/Qwen2.5-Coder-1.5B")
-    parser.add_argument("--test_file",        default="data_sample/clone_test.jsonl")
+    parser.add_argument("--test_file",        default="data_sample/bytecode_clone_100k/test.jsonl")
     parser.add_argument("--node_type_emb",    default="node_type_embedding.pth")
     parser.add_argument("--graph_token_num",  type=int, default=64)
     parser.add_argument("--graph_hidden_dim", type=int, default=512)
     parser.add_argument("--device",           default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--output_dir",       default="output/bytecode_clone_100k/qwen2.5-coder-1.5b",
+                        help="Training output dir — used to locate best_checkpoint automatically.")
     parser.add_argument("--max_samples",      type=int, default=None)
     args = parser.parse_args()
+
+    # Auto-resolve checkpoint to best_checkpoint if not explicitly provided
+    if args.checkpoint is None:
+        args.checkpoint = os.path.join(args.output_dir, "best_checkpoint")
+        print(f"No checkpoint specified — using best_checkpoint: {args.checkpoint}")
 
     lm, gnn, adapter, tokenizer, model_args = load_model(
         args.base_model, args.checkpoint,
@@ -227,9 +241,22 @@ def main():
     model_args.human_ids = tokenizer.encode(HUMAN_MARKER, add_special_tokens=False)
     model_args.bot_ids   = tokenizer.encode(BOT_MARKER,   add_special_tokens=False)
 
-    y_true, y_pred = [], []
+    # ── Resume: load already-evaluated samples ───────────────────────────────
+    progress_path = f"{args.checkpoint}/eval_progress.json"
     per_sample_rows = []
+    resume_from = 0
+    if os.path.exists(progress_path):
+        with open(progress_path) as f:
+            per_sample_rows = json.load(f)
+        resume_from = len(per_sample_rows)
+        print(f"  Resuming from sample {resume_from} (found {resume_from} already evaluated)")
+
+    y_true = [r["true_label"] for r in per_sample_rows]
+    y_pred = [r["predicted"]  for r in per_sample_rows]
+
     for i, sample in enumerate(samples):
+        if i < resume_from:
+            continue
         pred, yes_score, no_score = predict(
             lm, gnn, adapter, tokenizer, sample, node_type_emb, model_args, args.device
         )
@@ -248,6 +275,10 @@ def main():
         if (i + 1) % 10 == 0:
             print(f"  [{i+1}/{len(samples)}] yes={yes_score:.3f}  no={no_score:.3f}  "
                   f"pred={'yes' if pred else 'no '}  true={'yes' if sample['label'] else 'no '}")
+        if (i + 1) % 500 == 0:
+            with open(progress_path, "w") as f:
+                json.dump(per_sample_rows, f)
+            print(f"  [checkpoint saved at {i+1}]")
 
     metrics = compute_metrics(y_true, y_pred)
 
@@ -292,6 +323,10 @@ def main():
     with open(detail_path, "w") as f:
         json.dump(per_sample_rows, f, indent=2)
     print(f"Per-sample saved → {detail_path}")
+
+    # Remove progress file now that final results are saved
+    if os.path.exists(progress_path):
+        os.remove(progress_path)
 
 
 if __name__ == "__main__":

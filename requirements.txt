@@ -1,12 +1,15 @@
---index-url https://download.pytorch.org/whl/cu121
+# Python 3.10 compatible versions (matches Colab environment)
+# Install with: TMPDIR=~/pip_tmp pip install --cache-dir ~/pip_cache -r requirements.txt
+
+--extra-index-url https://download.pytorch.org/whl/cu121
 torch==2.3.0
 torchvision==0.18.0
 torchaudio==2.3.0
+torchdata==0.7.1
 
 --find-links https://data.dgl.ai/wheels/torch-2.3/cu121/repo.html
 dgl==2.3.0+cu121
 
-torchdata==0.7.1
 transformers==4.48.0
 datasets==3.2.0
 accelerate==1.2.1

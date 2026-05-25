@@ -48,9 +48,10 @@ encoder.initializer()
 
 
 def collate_fn(instances):
-        input_ids, loss_mask, node_ids, edge_index = [], [], [], []
+        input_ids, loss_mask, node_ids, edge_index, embeddings = [], [], [], [], []
+        has_graph = 'node_ids' in instances[0] or 'embeddings' in instances[0]
         for instance in instances:
-            if 'node_ids' in instance.keys():
+            if has_graph:
                 features = encoder.encode_graph(instance)
             else:
                 features = encoder.encode_text(instance)
@@ -59,18 +60,28 @@ def collate_fn(instances):
                 loss_mask.append(features['loss_mask'])
                 node_ids.append(features.get('node_ids', None))
                 edge_index.append(features.get('edge_index', None))
+                embeddings.append(features.get('embeddings', None))
 
         n = len(input_ids)
 
         # batch graphs
-        if 'node_ids' in instances[0].keys():
+        if has_graph:
             if n == 0:
                 return None
             graphs = []
+            use_precomputed = embeddings[0] is not None
             for i in range(n):
                 edges = torch.LongTensor(edge_index[i]).t().contiguous()
-                g = dgl.graph((edges[0,:], edges[1,:]), num_nodes=len(node_ids[i]))
-                g.ndata['x'] = node_type_embedding[torch.tensor(node_ids[i])]
+                if use_precomputed:
+                    num_nodes = len(embeddings[i])
+                else:
+                    num_nodes = len(node_ids[i])
+                g = dgl.graph((edges[0,:], edges[1,:]), num_nodes=num_nodes)
+                if use_precomputed:
+                    # pre-computed 200-dim bytecode embeddings, one per basic block
+                    g.ndata['x'] = torch.tensor(embeddings[i], dtype=torch.float32)
+                else:
+                    g.ndata['x'] = node_type_embedding[torch.tensor(node_ids[i])]
                 graphs.append(g)
             batch = dgl.batch(graphs)
             # edge_index is changed, features remain the same

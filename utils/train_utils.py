@@ -1,4 +1,5 @@
 import os
+import json
 import math, random
 import torch
 from tqdm.auto import tqdm
@@ -16,7 +17,9 @@ def write_tensorboard(summary_writer: SummaryWriter, log_dict: dict, completed_s
         summary_writer.add_scalar(f'{key}', value, completed_steps)
 
 
-def accelerate_saving_checkpoint(accelerator, model, tokenizer, output_dir: str, completed_steps: int, args):
+def accelerate_saving_checkpoint(accelerator, model, tokenizer, output_dir: str, completed_steps: int, args,
+                                   optimizer=None, lr_scheduler=None, epoch=None,
+                                   min_eval_loss=None, stall_num=None, best_step=None):
     accelerator.wait_for_everyone()
 
     accelerator.print("[CHECKPOINT] Saving checkpoint")
@@ -25,7 +28,21 @@ def accelerate_saving_checkpoint(accelerator, model, tokenizer, output_dir: str,
         tokenizer.save_pretrained(output_dir)
         torch.save(accelerator.get_state_dict(model.gnn), f"{output_dir}/GNN.pth")
         torch.save(accelerator.get_state_dict(model.adapter), f"{output_dir}/adapter.pth")
-        
+
+        # Save training state for true resume support
+        if optimizer is not None and lr_scheduler is not None and epoch is not None:
+            torch.save(optimizer.state_dict(), f"{output_dir}/optimizer.pth")
+            torch.save(lr_scheduler.state_dict(), f"{output_dir}/scheduler.pth")
+            training_state = {
+                "completed_steps": int(completed_steps),
+                "epoch": int(epoch),
+                "min_eval_loss": float(min_eval_loss) if min_eval_loss != float('inf') else None,
+                "stall_num": int(stall_num),
+                "best_step": int(best_step) if best_step is not None else None,
+            }
+            with open(f"{output_dir}/training_state.json", "w") as f:
+                json.dump(training_state, f, indent=2)
+
     if args.mode != 'pt':
         unwrapped_model = accelerator.unwrap_model(model)
         unwrapped_model.lm.save_pretrained(
@@ -181,11 +198,30 @@ def accelerate_train(accelerator, model, train_dataloader, valid_dataloader, tra
     # set starting_epoch, completed_steps and resume_step of train_dataloader
     completed_steps = 0
     starting_epoch = 0
+    resume_skip_steps = 0  # inner-loop batches to skip on first resumed epoch
 
     # monitor minimum eval_loss, stalling num, and best_step
     min_eval_loss = float('inf')
     stall_num = 0
     best_step = None
+
+    # Load training state for true resume
+    if args.checkpoint and os.path.exists(f"{args.checkpoint}/training_state.json"):
+        with open(f"{args.checkpoint}/training_state.json") as f:
+            state = json.load(f)
+        completed_steps = state["completed_steps"]
+        starting_epoch = state["epoch"]
+        min_eval_loss = state["min_eval_loss"] if state["min_eval_loss"] is not None else float('inf')
+        stall_num = state["stall_num"]
+        best_step = state["best_step"]
+        steps_per_epoch = args.max_train_steps // args.num_train_epochs if args.max_train_steps else 0
+        resume_skip_steps = (completed_steps % steps_per_epoch) * args.gradient_accumulation_steps if steps_per_epoch else 0
+        if os.path.exists(f"{args.checkpoint}/optimizer.pth"):
+            optimizer.load_state_dict(torch.load(f"{args.checkpoint}/optimizer.pth", map_location="cpu"))
+        if os.path.exists(f"{args.checkpoint}/scheduler.pth"):
+            lr_scheduler.load_state_dict(torch.load(f"{args.checkpoint}/scheduler.pth"))
+        progress_bar.update(completed_steps)
+        accelerator.print(f"[RESUME] Resuming from step {completed_steps}, epoch {starting_epoch}, skipping {resume_skip_steps} batches")
 
     # monitor train loss
     reduce_loss, reduce_step = 0, 0
@@ -229,12 +265,22 @@ def accelerate_train(accelerator, model, train_dataloader, valid_dataloader, tra
         if args.mode == 'ft':
             print(f"length of dataloader: {len(train_dataloader_ft)}, ratio: {ratio}")
 
+        # How many inner-loop batches to skip for this epoch (only on first resumed epoch)
+        skip_remaining = resume_skip_steps if epoch == starting_epoch else 0
+        resume_skip_steps = 0  # only skip once
+
         model.train()
         # Inner Loop!
         for step in range(len(train_dataloader) + len(train_dataloader_ft) if args.mode == 'ft' else len(train_dataloader)):
-            
+
+            batch, next_idx, next_ft_idx = get_batch(next_idx, next_ft_idx)
+
+            # Skip already-processed batches when resuming
+            if skip_remaining > 0:
+                skip_remaining -= 1
+                continue
+
             with accelerator.accumulate(model):
-                batch, next_idx, next_ft_idx = get_batch(next_idx, next_ft_idx)
                 if batch is None:
                     continue
                 # forward
@@ -300,7 +346,9 @@ def accelerate_train(accelerator, model, train_dataloader, valid_dataloader, tra
                         output_dir = f"step_{completed_steps}"
                         if args.output_dir is not None:
                             output_dir = os.path.join(args.output_dir, output_dir)
-                        accelerate_saving_checkpoint(accelerator, model, tokenizer, output_dir, completed_steps, args)
+                        accelerate_saving_checkpoint(accelerator, model, tokenizer, output_dir, completed_steps, args,
+                                                     optimizer=optimizer, lr_scheduler=lr_scheduler, epoch=epoch,
+                                                     min_eval_loss=min_eval_loss, stall_num=stall_num, best_step=best_step)
 
                     # steps evaluation
                     if completed_steps % args.evaluation_steps == 0:

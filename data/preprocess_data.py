@@ -104,7 +104,11 @@ class UniformEncoder(Encoder):
         assert len(input_ids) == len(loss_mask)
         if len(input_ids) <= self.seq_length:
             features = self.padding(input_ids, loss_mask)
-            features['node_ids'] = data['node_ids']
+            # support both pre-computed embeddings (bytecode) and integer node type ids (AST)
+            if 'embeddings' in data:
+                features['embeddings'] = data['embeddings']
+            else:
+                features['node_ids'] = data['node_ids']
             features['edge_index'] = data['edge_index']
             return features
 

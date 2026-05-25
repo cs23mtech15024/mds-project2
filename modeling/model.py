@@ -72,14 +72,17 @@ class Model(nn.Module):
             self.lm.resize_token_embeddings(vocab)
         # lora
         if args.lora:
-            peft_config = LoraConfig(
-                task_type=TaskType.CAUSAL_LM,
-                inference_mode=False,
-                r=args.lora_rank,
-                lora_alpha=args.lora_alpha,
-                target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "down_proj", "up_proj"]
-            )
-            self.lm = get_peft_model(self.lm, peft_config)
+            if args.checkpoint:
+                self.lm = PeftModel.from_pretrained(self.lm, args.checkpoint, is_trainable=True)
+            else:
+                peft_config = LoraConfig(
+                    task_type=TaskType.CAUSAL_LM,
+                    inference_mode=False,
+                    r=args.lora_rank,
+                    lora_alpha=args.lora_alpha,
+                    target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "down_proj", "up_proj"]
+                )
+                self.lm = get_peft_model(self.lm, peft_config)
         print_rank_0(f"Parameters of language model: {count_parameters(self.lm) / 1e9:.2f}B")
 
         # graph model

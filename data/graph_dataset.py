@@ -7,7 +7,7 @@ from data.preprocess_data import UniformEncoder
 
 
 def load_dataset(args, accelerator):
-    all_data_fields = ['node_ids', 'edge_index', 'source'] if args.mode == 'pt' else ['node_ids', 'edge_index', 'question', 'human', 'bot']
+    all_data_fields = ['node_ids', 'edge_index', 'source'] if args.mode == 'pt' else ['node_ids', 'embeddings', 'edge_index', 'question', 'human', 'bot']
 
     encoder = UniformEncoder(args)
     encoder.initializer()
@@ -34,7 +34,8 @@ def load_dataset(args, accelerator):
     for file in jsonl_files:
         file_name = f"{args.data_dir}/{file}"
         df = pd.read_json(file_name, lines=True)
-        if args.mode == 'ft' and 'node_ids' not in df.keys():
+        has_graph = 'node_ids' in df.keys() or 'embeddings' in df.keys()
+        if args.mode == 'ft' and not has_graph:
             dfs_ft.append(df)
         else:
             dfs.append(df)

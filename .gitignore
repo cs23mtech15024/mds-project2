@@ -10,6 +10,12 @@ __pycache__/
 # Training outputs (generated artifacts)
 output/
 
+# Data files (large, regenerated from raw data)
+data_sample/
+
+# Large binary model files
+*.pth
+
 # Claude Code memory
 memory/
 
